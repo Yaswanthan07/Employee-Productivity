@@ -25,6 +25,30 @@ def get_custom_css() -> str:
             font-family: 'Plus Jakarta Sans', sans-serif;
         }
 
+        [data-testid="stSidebarNav"] {
+            padding-top: 1rem;
+        }
+
+        [data-testid="stSidebarNav"] a {
+            border-radius: 12px;
+            margin: 0.15rem 0.25rem;
+            padding: 0.65rem 0.8rem;
+            transition: all 0.2s ease;
+            color: #0F172A;
+        }
+
+        [data-testid="stSidebarNav"] a:hover {
+            background: rgba(59, 130, 246, 0.08);
+            transform: translateX(2px);
+        }
+
+        [data-testid="stSidebarNav"] a[aria-current="page"] {
+            background: linear-gradient(90deg, rgba(14, 165, 233, 0.12), rgba(59, 130, 246, 0.08));
+            border: 1px solid rgba(59, 130, 246, 0.20);
+            box-shadow: 0 10px 25px -18px rgba(14, 165, 233, 0.65);
+            font-weight: 700;
+        }
+
         /* Top Executive Header */
         .executive-header {
             background: linear-gradient(135deg, #0F172A 0%, #1E293B 60%, #0369A1 100%);
