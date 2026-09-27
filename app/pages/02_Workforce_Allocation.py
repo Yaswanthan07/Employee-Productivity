@@ -38,17 +38,17 @@ with right:
 st.markdown("### Priority Reallocation Strategy")
 if recommendations:
     for rec in recommendations[:4]:
-        badge_color = "#DC2626" if rec["priority"] == "HIGH" else "#D97706"
+        badge_color = "#166534" if rec["priority"] == "HIGH" else "#15803D"
         st.markdown(
             f"""
             <div class="action-card">
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
                     <span style="font-size:0.72rem; font-weight:700; color:{badge_color}; text-transform:uppercase;">● {rec['priority']} PRIORITY | {rec['type']}</span>
-                    <span style="font-size:0.78rem; color:#64748B; font-weight:600;">{rec['department']}</span>
+                    <span style="font-size:0.78rem; color:var(--muted); font-weight:600;">{rec['department']}</span>
                 </div>
-                <div style="font-weight:700; font-size:0.96rem; color:#0F172A; margin-bottom:4px;">{rec['title']}</div>
-                <div style="font-size:0.84rem; color:#475569; line-height:1.45; margin-bottom:5px;">{rec['description']}</div>
-                <div style="font-size:0.8rem; font-weight:600; color:#0284C7;">👉 Action: {rec['action_item']}</div>
+                <div style="font-weight:700; font-size:0.96rem; color:var(--text); margin-bottom:4px;">{rec['title']}</div>
+                <div style="font-size:0.84rem; color:var(--muted); line-height:1.45; margin-bottom:5px;">{rec['description']}</div>
+                <div style="font-size:0.8rem; font-weight:600; color:#166534;">👉 Action: {rec['action_item']}</div>
             </div>
             """,
             unsafe_allow_html=True,

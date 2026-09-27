@@ -15,11 +15,19 @@ for p in [BASE_DIR, APP_DIR]:
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 
 try:
+    from app.auth_service import (
+        register_company,
+        login_user,
+        logout_session,
+        get_session_context,
+        get_user_profile,
+    )
     from app.backend import (
         load_and_clean_data,
         compute_top_level_kpis,
@@ -33,6 +41,15 @@ try:
         get_productivity_model
     )
 except ImportError:
+    from auth_service import (
+        register_company,
+        login_user,
+        logout_session,
+        get_session_context,
+        get_user_profile,
+        update_user_profile,
+        change_user_password,
+    )
     from backend import (
         load_and_clean_data,
         compute_top_level_kpis,
@@ -45,6 +62,8 @@ except ImportError:
         get_attrition_model,
         get_productivity_model
     )
+
+security = HTTPBearer(auto_error=False)
 
 # Initialize FastAPI App
 app = FastAPI(
@@ -66,6 +85,29 @@ app.add_middleware(
 # ---------------------------------------------------------
 # Request / Response Schemas
 # ---------------------------------------------------------
+class CompanyRegistrationInput(BaseModel):
+    company_name: str = Field(..., min_length=2, description="Company name")
+    full_name: str = Field(..., min_length=2, description="HR user full name")
+    email: str = Field(..., description="Work email")
+    password: str = Field(..., min_length=8, description="Password")
+    confirm_password: str = Field(..., min_length=8, description="Confirm password")
+
+
+class LoginInput(BaseModel):
+    email: str = Field(..., description="Email")
+    password: str = Field(..., description="Password")
+
+
+class ProfileUpdateInput(BaseModel):
+    full_name: str = Field(..., min_length=2, description="Updated full name")
+
+
+class PasswordChangeInput(BaseModel):
+    current_password: str = Field(..., description="Current password")
+    new_password: str = Field(..., min_length=8, description="New password")
+    confirm_password: str = Field(..., min_length=8, description="Confirm new password")
+
+
 class EmployeeFeatureInput(BaseModel):
     Age: int = Field(default=30, ge=18, le=70, description="Employee Age")
     Gender: str = Field(default="Male", description="Gender (Male, Female, Other)")
@@ -100,6 +142,27 @@ class ProductivityPredictionResponse(BaseModel):
     strategic_guidance: str
 
 
+def get_current_session(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> Dict[str, Any]:
+    if credentials is None or not credentials.credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    session = get_session_context(credentials.credentials)
+    if session is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired session.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    return session
+
+
 # ---------------------------------------------------------
 # API Endpoints
 # ---------------------------------------------------------
@@ -125,8 +188,88 @@ def health_check():
     return {"status": "healthy", "service": "productivity-engine-api"}
 
 
+@app.post("/auth/register", tags=["Authentication"])
+def register_user(payload: CompanyRegistrationInput):
+    try:
+        result = register_company(
+            company_name=payload.company_name,
+            full_name=payload.full_name,
+            email=payload.email,
+            password=payload.password,
+            confirm_password=payload.confirm_password,
+        )
+        return {
+            "message": "Company registered successfully.",
+            **result,
+        }
+    except ValueError as exc:
+        msg = str(exc)
+        status_code = status.HTTP_409_CONFLICT if "already" in msg.lower() or "exists" in msg.lower() else status.HTTP_400_BAD_REQUEST
+        raise HTTPException(status_code=status_code, detail=msg)
+
+
+@app.post("/auth/login", tags=["Authentication"])
+def login_user_endpoint(payload: LoginInput):
+    try:
+        session = login_user(email=payload.email, password=payload.password)
+        return {
+            "message": "Login successful.",
+            **session,
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc))
+
+
+@app.post("/auth/logout", tags=["Authentication"])
+def logout_user_endpoint(current_user: Dict[str, Any] = Depends(get_current_session)):
+    success = logout_session(current_user["session_id"])
+    if not success:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unable to log out the current session.")
+    return {"message": "Logged out successfully."}
+
+
+@app.get("/auth/me", tags=["Authentication"])
+def get_current_user_profile(current_user: Dict[str, Any] = Depends(get_current_session)):
+    profile = get_user_profile(current_user["user_id"])
+    if profile is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User profile not found.")
+    return {
+        "user_id": profile["user_id"],
+        "company_id": profile["company_id"],
+        "company_name": profile["company_name"],
+        "full_name": profile["full_name"],
+        "email": profile["email"],
+        "role": profile["role"],
+        "status": profile["status"],
+    }
+
+
+@app.put("/auth/profile", tags=["Authentication"])
+def update_profile(payload: ProfileUpdateInput, current_user: Dict[str, Any] = Depends(get_current_session)):
+    try:
+        result = update_user_profile(current_user["user_id"], full_name=payload.full_name)
+        return {"message": "Profile updated successfully.", **result}
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@app.put("/auth/password", tags=["Authentication"])
+def change_password(payload: PasswordChangeInput, current_user: Dict[str, Any] = Depends(get_current_session)):
+    try:
+        change_user_password(
+            current_user["user_id"],
+            current_password=payload.current_password,
+            new_password=payload.new_password,
+            confirm_password=payload.confirm_password,
+        )
+        return {"message": "Password updated successfully."}
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
 @app.get("/kpis", tags=["KPIs & Analytics"])
 def get_overall_kpis(
+    current_user: Dict[str, Any] = Depends(get_current_session),
     department: Optional[str] = Query(None, description="Filter by department (optional)"),
     burnout: Optional[str] = Query(None, description="Filter by burnout risk (optional)")
 ):
@@ -143,7 +286,7 @@ def get_overall_kpis(
 
 
 @app.get("/kpis/department", tags=["KPIs & Analytics"])
-def get_department_kpis():
+def get_department_kpis(current_user: Dict[str, Any] = Depends(get_current_session)):
     """
     Returns department-level benchmarking metrics.
     """
@@ -153,7 +296,7 @@ def get_department_kpis():
 
 
 @app.get("/workforce/allocation", tags=["Workforce Allocation"])
-def get_workforce_allocation():
+def get_workforce_allocation(current_user: Dict[str, Any] = Depends(get_current_session)):
     """
     Returns breakdown of overloaded, underutilized, high-performer, and balanced workforce counts.
     """
@@ -170,7 +313,7 @@ def get_workforce_allocation():
 
 
 @app.get("/workforce/recommendations", tags=["Workforce Allocation"])
-def get_allocation_recommendations():
+def get_allocation_recommendations(current_user: Dict[str, Any] = Depends(get_current_session)):
     """
     Returns data-driven workforce reallocation strategies and priority action items.
     """
@@ -183,7 +326,7 @@ def get_allocation_recommendations():
 
 
 @app.post("/predict/attrition", response_model=AttritionPredictionResponse, tags=["Machine Learning"])
-def predict_attrition(payload: EmployeeFeatureInput):
+def predict_attrition(payload: EmployeeFeatureInput, current_user: Dict[str, Any] = Depends(get_current_session)):
     """
     Predicts employee attrition risk probability, risk category, and key contributing drivers.
     """
@@ -197,7 +340,7 @@ def predict_attrition(payload: EmployeeFeatureInput):
 
 
 @app.post("/predict/productivity", response_model=ProductivityPredictionResponse, tags=["Machine Learning"])
-def predict_productivity(payload: EmployeeFeatureInput):
+def predict_productivity(payload: EmployeeFeatureInput, current_user: Dict[str, Any] = Depends(get_current_session)):
     """
     Predicts employee productivity tier and provides strategic HR guidance.
     """

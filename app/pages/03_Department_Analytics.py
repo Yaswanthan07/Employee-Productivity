@@ -28,10 +28,10 @@ with summary_col:
         bottom = dept_df.iloc[-1]
         st.markdown(
             f"""
-            <div class="action-card" style="border-left:4px solid #10B981;">
-                <div style="font-size:0.75rem; font-weight:700; color:#10B981; text-transform:uppercase;">🥇 Top department</div>
-                <div style="font-weight:800; font-size:1.1rem; color:#0F172A;">{top['Department']}</div>
-                <div style="font-size:0.85rem; color:#475569;">
+            <div class="action-card" style="border-left:4px solid #15803D;">
+                <div style="font-size:0.75rem; font-weight:700; color:#15803D; text-transform:uppercase;">🥇 Top department</div>
+                <div style="font-weight:800; font-size:1.1rem; color:var(--text);">{top['Department']}</div>
+                <div style="font-size:0.85rem; color:var(--muted);">
                     • Task Completion: <b>{top['Avg_Task_Completion_Pct']}%</b><br>
                     • Weekly Hours: <b>{top['Avg_Weekly_Hours']}h</b><br>
                     • Overload Rate: <b>{top['Overloaded_Pct']}%</b>
@@ -42,10 +42,10 @@ with summary_col:
         )
         st.markdown(
             f"""
-            <div class="action-card" style="border-left:4px solid #EF4444;">
-                <div style="font-size:0.75rem; font-weight:700; color:#EF4444; text-transform:uppercase;">⚠️ Lowest productivity</div>
-                <div style="font-weight:800; font-size:1.1rem; color:#0F172A;">{bottom['Department']}</div>
-                <div style="font-size:0.85rem; color:#475569;">
+            <div class="action-card" style="border-left:4px solid #166534;">
+                <div style="font-size:0.75rem; font-weight:700; color:#166534; text-transform:uppercase;">⚠️ Lowest productivity</div>
+                <div style="font-weight:800; font-size:1.1rem; color:var(--text);">{bottom['Department']}</div>
+                <div style="font-size:0.85rem; color:var(--muted);">
                     • Task Completion: <b>{bottom['Avg_Task_Completion_Pct']}%</b><br>
                     • Weekly Hours: <b>{bottom['Avg_Weekly_Hours']}h</b><br>
                     • Overload Rate: <b>{bottom['Overloaded_Pct']}%</b>
