@@ -15,8 +15,11 @@ for p in [BASE_DIR, APP_DIR]:
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from fastapi import FastAPI, HTTPException, Query, Depends, status
+import io
+
+from fastapi import FastAPI, File, HTTPException, Query, Depends, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 
@@ -27,6 +30,8 @@ try:
         logout_session,
         get_session_context,
         get_user_profile,
+        update_user_profile,
+        change_user_password,
     )
     from app.backend import (
         load_and_clean_data,
@@ -40,6 +45,7 @@ try:
         get_attrition_model,
         get_productivity_model
     )
+    from app.csv_validation import validate_uploaded_employee_csv
 except ImportError:
     from auth_service import (
         register_company,
@@ -62,6 +68,7 @@ except ImportError:
         get_attrition_model,
         get_productivity_model
     )
+    from csv_validation import validate_uploaded_employee_csv
 
 security = HTTPBearer(auto_error=False)
 
@@ -186,6 +193,63 @@ def get_root():
 @app.get("/health", tags=["Health & Metadata"])
 def health_check():
     return {"status": "healthy", "service": "productivity-engine-api"}
+
+
+@app.post("/upload/validate", tags=["Data Validation"])
+async def validate_uploaded_csv(file: UploadFile = File(...)):
+    """Validate a user-uploaded employee CSV file and return a compact JSON report."""
+    if not file or not file.filename:
+        return JSONResponse(status_code=400, content={"success": False, "status": "invalid", "message": "A CSV file is required."})
+
+    filename = file.filename or "uploaded.csv"
+    if not filename.lower().endswith(".csv"):
+        return JSONResponse(status_code=400, content={"success": False, "status": "invalid", "message": "Only CSV files are supported."})
+
+    contents = await file.read()
+    if len(contents) == 0:
+        return JSONResponse(status_code=400, content={"success": False, "status": "invalid", "message": "The uploaded CSV is empty."})
+
+    if len(contents) > 10 * 1024 * 1024:
+        return JSONResponse(status_code=413, content={"success": False, "status": "invalid", "message": "The uploaded file exceeds the 10 MB limit."})
+
+    try:
+        payload = io.BytesIO(contents)
+        payload.name = filename
+        report = validate_uploaded_employee_csv(payload)
+    except Exception:
+        return JSONResponse(status_code=500, content={"success": False, "status": "invalid", "message": "The backend could not validate the uploaded CSV."})
+
+    preview_df = report.get("preview_df")
+    preview_records = preview_df.head(10).to_dict(orient="records") if preview_df is not None and not preview_df.empty else []
+
+    missing_columns = report.get("schema_summary", {}).get("missing_required_columns", [])
+    unexpected_columns = report.get("schema_summary", {}).get("unexpected_columns", [])
+    data_quality = report.get("data_quality_summary", {})
+
+    response = {
+        "success": report.get("status") in {"Valid", "Valid with warnings"},
+        "status": str(report.get("status", "Invalid")).lower().replace(" ", "_"),
+        "message": "CSV validation succeeded." if report.get("status") in {"Valid", "Valid with warnings"} else "CSV validation failed.",
+        "file_name": filename,
+        "row_count": int(report.get("file_summary", {}).get("rows", 0) or len(preview_df) if preview_df is not None else 0),
+        "column_count": int(report.get("file_summary", {}).get("columns", 0) or (len(preview_df.columns) if preview_df is not None else 0)),
+        "errors": report.get("errors", []),
+        "warnings": report.get("warnings", []),
+        "missing_columns": missing_columns,
+        "unexpected_columns": unexpected_columns,
+        "missing_values": data_quality.get("missing_by_column", {}),
+        "duplicate_rows": int(data_quality.get("duplicate_rows", 0)),
+        "duplicate_employee_ids": int(data_quality.get("duplicate_employee_ids", 0)),
+        "invalid_values": {},
+        "data_types": {},
+        "preview": preview_records,
+    }
+
+    if report.get("errors"):
+        response["message"] = "; ".join(report["errors"][:3])
+        return JSONResponse(status_code=400, content=response)
+
+    return response
 
 
 @app.post("/auth/register", tags=["Authentication"])

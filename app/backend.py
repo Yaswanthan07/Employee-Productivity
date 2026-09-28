@@ -196,7 +196,33 @@ def load_and_clean_data(file_path: Optional[str] = None) -> pd.DataFrame:
         os.makedirs(os.path.dirname(target_path), exist_ok=True)
         df.to_csv(target_path, index=False)
 
-    # Basic data cleaning & type casting
+    return prepare_dataset_for_dashboard(df)
+
+
+def prepare_dataset_for_dashboard(df: Optional[pd.DataFrame]) -> pd.DataFrame:
+    """Normalizes and enriches any employee dataset so all dashboard pages operate on the same schema."""
+    if df is None:
+        return pd.DataFrame()
+
+    work_df = df.copy()
+    if work_df.empty:
+        return work_df
+
+    work_df.columns = [str(col).strip() for col in work_df.columns]
+
+    required_cols = [
+        'Employee_ID', 'Age', 'Gender', 'Department', 'Job_Role', 'Education_Level',
+        'Total_Experience_Years', 'Years_at_Company', 'Monthly_Salary_INR',
+        'Weekly_Work_Hours', 'Overtime_Hours_Weekly', 'Projects_Handled',
+        'Task_Completion_Pct', 'Attendance_Pct', 'Manager_Rating', 'Satisfaction_Score',
+        'Burnout_Risk_Level', 'Work_From_Home_Pct', 'Training_Hours_Last_Year',
+        'Promotion_Last_2Years', 'Attrition'
+    ]
+
+    for col in required_cols:
+        if col not in work_df.columns:
+            work_df[col] = pd.NA
+
     numeric_cols = [
         'Age', 'Total_Experience_Years', 'Years_at_Company', 'Monthly_Salary_INR',
         'Weekly_Work_Hours', 'Overtime_Hours_Weekly', 'Projects_Handled',
@@ -204,62 +230,59 @@ def load_and_clean_data(file_path: Optional[str] = None) -> pd.DataFrame:
         'Satisfaction_Score', 'Work_From_Home_Pct', 'Training_Hours_Last_Year'
     ]
     for col in numeric_cols:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-            df[col] = df[col].fillna(df[col].median())
+        if col in work_df.columns:
+            work_df[col] = pd.to_numeric(work_df[col], errors='coerce')
+            if not work_df[col].dropna().empty:
+                work_df[col] = work_df[col].fillna(work_df[col].median())
+            else:
+                work_df[col] = work_df[col].fillna(0)
 
-    # Categorical handling
     cat_cols = ['Department', 'Job_Role', 'Education_Level', 'Gender', 'Burnout_Risk_Level', 'Promotion_Last_2Years', 'Attrition']
     for col in cat_cols:
-        if col in df.columns:
-            df[col] = df[col].fillna('Unknown').astype(str)
+        if col in work_df.columns:
+            work_df[col] = work_df[col].fillna('Unknown').astype(str).str.strip()
 
-    # Derived Metric 1: Composite Productivity Score (0 to 100)
-    # 45% Task Completion + 35% Normalized Manager Rating (1-5 to 0-100) + 20% Attendance
-    df['Productivity_Score'] = (
-        (df['Task_Completion_Pct'] * 0.45) +
-        ((df['Manager_Rating'] / 5.0 * 100.0) * 0.35) +
-        (df['Attendance_Pct'] * 0.20)
+    work_df['Productivity_Score'] = (
+        (work_df['Task_Completion_Pct'] * 0.45) +
+        ((work_df['Manager_Rating'] / 5.0 * 100.0) * 0.35) +
+        (work_df['Attendance_Pct'] * 0.20)
     ).round(1)
 
-    # Derived Metric 2: Workload Intensity Index (Normalized baseline 1.0)
-    df['Workload_Index'] = (
-        (df['Weekly_Work_Hours'] / 40.0 * 0.45) +
-        (df['Projects_Handled'] / 4.0 * 0.30) +
-        (df['Overtime_Hours_Weekly'] / 5.0 * 0.25)
+    work_df['Workload_Index'] = (
+        (work_df['Weekly_Work_Hours'] / 40.0 * 0.45) +
+        (work_df['Projects_Handled'] / 4.0 * 0.30) +
+        (work_df['Overtime_Hours_Weekly'] / 5.0 * 0.25)
     ).round(2)
 
-    # Derived Metric 3: Workforce Status Classification
     def classify_status(row):
         is_overloaded = (row['Weekly_Work_Hours'] >= 48.0) or (row['Overtime_Hours_Weekly'] >= 10.0) or (row['Weekly_Work_Hours'] > 44.0 and row['Task_Completion_Pct'] < 75.0)
         is_underutilized = (row['Weekly_Work_Hours'] < 38.0) and (row['Projects_Handled'] <= 2) and (row['Task_Completion_Pct'] >= 75.0)
         is_star = (row['Productivity_Score'] >= 85.0) and (row['Manager_Rating'] >= 4.2) and (row['Weekly_Work_Hours'] <= 46.0)
-        
+
         if is_overloaded:
             return 'Overloaded'
         elif is_underutilized:
             return 'Underutilized'
         elif is_star:
             return 'High Performer'
-        else:
-            return 'Optimal / Balanced'
+        return 'Optimal / Balanced'
 
-    df['Workforce_Status'] = df.apply(classify_status, axis=1)
+    work_df['Workforce_Status'] = work_df.apply(classify_status, axis=1)
 
-    # Derived Metric 4: Experience Tier
     def get_exp_tier(exp):
+        if pd.isna(exp):
+            return 'Junior (0-3 yrs)'
         if exp < 3.0:
             return 'Junior (0-3 yrs)'
-        elif exp < 7.0:
+        if exp < 7.0:
             return 'Mid-Level (3-7 yrs)'
-        elif exp < 12.0:
+        if exp < 12.0:
             return 'Senior (7-12 yrs)'
-        else:
-            return 'Lead / Principal (12+ yrs)'
+        return 'Lead / Principal (12+ yrs)'
 
-    df['Experience_Tier'] = df['Total_Experience_Years'].apply(get_exp_tier)
+    work_df['Experience_Tier'] = work_df['Total_Experience_Years'].apply(get_exp_tier)
 
-    return df
+    return work_df
 
 
 def compute_top_level_kpis(df: pd.DataFrame) -> Dict[str, Any]:

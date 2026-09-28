@@ -1,6 +1,8 @@
+import io
 import os
 import sys
 
+import pandas as pd
 import requests
 import streamlit as st
 import streamlit.components.v1 as components
@@ -9,19 +11,10 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
-from app.backend import filter_data, load_and_clean_data
+from app.backend import filter_data, load_and_clean_data, prepare_dataset_for_dashboard
 from app.utils import get_custom_css
 
 API_BASE_URL = os.getenv("EMPLOYEE_PRODUCTIVITY_API_URL", "http://localhost:8000")
-
-PAGE_NAV_ITEMS = [
-    {"title": "Executive Overview", "path": "app/pages/01_Executive_Overview.py", "icon": "📊"},
-    {"title": "Workforce Allocation", "path": "app/pages/02_Workforce_Allocation.py", "icon": "⚖️"},
-    {"title": "Department Analytics", "path": "app/pages/03_Department_Analytics.py", "icon": "📈"},
-    {"title": "Workload & Performance Analytics", "path": "app/pages/04_Workload_&_Performance_Analytics.py", "icon": "📉"},
-    {"title": "Talent Risk & AI Predictions", "path": "app/pages/05_Talent_Risk_&_AI_Predictions.py", "icon": "🤖"},
-    {"title": "Employee Data Explorer", "path": "app/pages/06_Employee_Data_Explorer.py", "icon": "🧾"},
-]
 
 
 @st.cache_data(ttl=3600)
@@ -29,48 +22,35 @@ def get_dataset():
     return load_and_clean_data()
 
 
+def reset_active_dataset() -> None:
+    for key in ["uploaded_employee_df", "sidebar_csv_validation", "dataset_source"]:
+        st.session_state.pop(key, None)
+    st.session_state["dataset_source"] = "default"
+
+
+def get_active_dataset() -> pd.DataFrame:
+    uploaded_df = st.session_state.get("uploaded_employee_df")
+    if uploaded_df is not None and not pd.DataFrame(uploaded_df).empty:
+        st.session_state["dataset_source"] = "uploaded"
+        return prepare_dataset_for_dashboard(pd.DataFrame(uploaded_df))
+
+    st.session_state["dataset_source"] = "default"
+    return get_dataset()
+
+
 COOKIE_NAME = "employee_productivity_auth_token"
 
 
 def set_browser_cookie(name: str, value: str, days: int = 7) -> None:
-    if not value:
-        return
-    secure_flag = "true" if os.getenv("APP_ENV", "development").lower() == "production" else "false"
-    components.html(
-        f"""
-        <script>
-            const secure = {secure_flag};
-            const cookieValue = "{value}";
-            document.cookie = "{name}=" + cookieValue + "; path=/; max-age={days * 86400}; SameSite=Lax" + (secure ? "; Secure" : "");
-        </script>
-        """,
-        height=0,
-    )
+    pass
 
 
 def clear_browser_cookie(name: str) -> None:
-    components.html(
-        f"""
-        <script>
-            document.cookie = "{name}=; path=/; max-age=0; SameSite=Lax";
-        </script>
-        """,
-        height=0,
-    )
+    pass
 
 
-def get_browser_cookie(name: str):
-    script = """
-    <script>
-        function getCookie(name) {
-            const match = document.cookie.match(new RegExp('(?:^|; )' + name.replace(/([.$?*|{}()[\\]\\/+^])/g, '\\$1') + '=([^;]*)'));
-            return match ? decodeURIComponent(match[1]) : '';
-        }
-        try { Streamlit.setComponentValue(getCookie('__COOKIE_NAME__')); } catch (e) {}
-    </script>
-    """.replace("__COOKIE_NAME__", name)
-    cookie_value = components.html(script, height=0)
-    return cookie_value or None
+def get_browser_cookie(name: str) -> None:
+    return None
 
 
 def clear_auth_session() -> None:
@@ -89,9 +69,11 @@ def password_policy_text(password: str):
         "One lowercase letter": any(c.islower() for c in password),
         "One special character": any(not c.isalnum() for c in password),
     }
-    rendered = "<ul style='margin:0.25rem 0 0 1rem; color: var(--muted);'>"
+    rendered = "<ul style='margin:0.35rem 0 0 1rem; color: var(--muted); font-size:0.82rem;'>"
     for label, ok in checks.items():
-        rendered += f"<li style='color:{'#15803D' if ok else '#526357'}'>{label}: {'✓' if ok else '•'}</li>"
+        color = "var(--emerald)" if ok else "var(--muted)"
+        icon = "✓" if ok else "•"
+        rendered += f"<li style='color:{color}; font-weight:{'600' if ok else '400'}'>{label}: {icon}</li>"
     rendered += "</ul>"
     return rendered
 
@@ -102,25 +84,93 @@ def _api_request(method: str, path: str, payload: dict | None = None, token: str
     if token:
         headers["Authorization"] = f"Bearer {token}"
     try:
-        response = requests.request(method=method.upper(), url=url, json=payload, headers=headers, timeout=10)
+        response = requests.request(method=method.upper(), url=url, json=payload, headers=headers, timeout=5)
         return response
     except requests.RequestException:
         return None
 
 
+def login_user_action(email: str, password: str) -> tuple[bool, str]:
+    if not email or not password:
+        return False, "Work email and password are required."
+
+    # 1. Try FastAPI REST endpoint
+    response = _api_request("post", "/auth/login", {"email": email, "password": password})
+    if response is not None and response.status_code == 200:
+        data = response.json()
+        st.session_state["auth_token"] = data["token"]
+        st.session_state["auth_user"] = data["full_name"]
+        st.session_state["user_email"] = data.get("email")
+        st.session_state["company_id"] = data["company_id"]
+        st.session_state["company_name"] = data.get("company_name", "Company")
+        st.session_state["user_role"] = data.get("role", "HR")
+        set_browser_cookie(COOKIE_NAME, data["token"])
+        return True, "Login successful."
+
+    # 2. Resilient local fallback directly against database
+    try:
+        from app.auth_service import login_user
+        data = login_user(email, password)
+        st.session_state["auth_token"] = data["token"]
+        st.session_state["auth_user"] = data["full_name"]
+        st.session_state["user_email"] = data.get("email")
+        st.session_state["company_id"] = data["company_id"]
+        st.session_state["company_name"] = data.get("company_name", "Company")
+        st.session_state["user_role"] = data.get("role", "HR")
+        set_browser_cookie(COOKIE_NAME, data["token"])
+        return True, "Login successful."
+    except Exception as exc:
+        err_msg = str(exc)
+        if response is not None and response.status_code != 200:
+            err_msg = response.json().get("detail", err_msg)
+        return False, err_msg
+
+
+def validate_uploaded_csv_backend(uploaded_file) -> dict | None:
+    if uploaded_file is None:
+        return None
+
+    try:
+        files = {"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type or "text/csv")}
+        response = requests.post(f"{API_BASE_URL}/upload/validate", files=files, timeout=20)
+        if response is None:
+            return {"success": False, "status": "invalid", "message": "Backend unavailable. Start the FastAPI API server first."}
+        try:
+            body = response.json()
+        except ValueError:
+            body = {"success": False, "status": "invalid", "message": "Unexpected backend response."}
+        if response.status_code != 200:
+            body.setdefault("success", False)
+            body.setdefault("status", "invalid")
+            body.setdefault("message", "Validation failed.")
+        return body
+    except requests.RequestException as exc:
+        return {"success": False, "status": "invalid", "message": f"API request failed: {str(exc)}"}
+
+
 def ensure_authenticated_session() -> tuple[bool, dict | None]:
-    token = st.session_state.get("auth_token") or get_browser_cookie(COOKIE_NAME)
-    if not token:
+    token = st.session_state.get("auth_token")
+    if not token or not isinstance(token, str) or not str(token).strip():
         clear_auth_session()
         return False, None
 
+    token = str(token).strip()
     st.session_state["auth_token"] = token
     response = _api_request("get", "/auth/me", token=token)
-    if response is None or response.status_code != 200:
-        clear_auth_session()
-        return False, None
+    if response is not None and response.status_code == 200:
+        profile = response.json()
+    else:
+        # Fallback to local auth database verification
+        from app.auth_service import get_session_context, get_user_profile
+        sess = get_session_context(token)
+        if not sess:
+            clear_auth_session()
+            return False, None
+        profile = get_user_profile(sess["user_id"])
+        if not profile:
+            clear_auth_session()
+            return False, None
 
-    profile = response.json()
     st.session_state["auth_user"] = profile.get("full_name")
     st.session_state["user_email"] = profile.get("email")
     st.session_state["company_id"] = profile.get("company_id")
@@ -131,483 +181,207 @@ def ensure_authenticated_session() -> tuple[bool, dict | None]:
 
 
 def render_auth_screen() -> None:
-    st.set_page_config(
-        page_title="Company Access",
-        page_icon="🔐",
-        layout="wide",
-        initial_sidebar_state="collapsed",
-    )
     st.markdown(get_custom_css(), unsafe_allow_html=True)
+
+    # Centered container styling
     st.markdown(
         """
         <style>
-            .auth-shell {
-                max-width: 720px;
-                margin: 2rem auto;
-                background: var(--panel, #FFFFFF);
-                border: 1px solid var(--border, #DCE7DE);
-                border-radius: 18px;
-                padding: 1.5rem;
-                box-shadow: 0 20px 30px -28px rgba(21, 128, 61, 0.28);
+            .auth-hero-card {
+                background: var(--panel);
+                border: 1px solid var(--border);
+                border-radius: 20px;
+                padding: 2.2rem 2.5rem 1.8rem;
+                box-shadow: 0 20px 45px -15px rgba(15, 23, 42, 0.12);
+                position: relative;
+                overflow: hidden;
+                margin-top: 1.5rem;
+                margin-bottom: 1.5rem;
             }
-            .auth-header {
-                font-size: clamp(1.7rem, 3vw, 2.5rem);
+            .auth-hero-card::before {
+                content: '';
+                position: absolute;
+                top: 0; left: 0; right: 0;
+                height: 5px;
+                background: linear-gradient(90deg, #4F46E5 0%, #10B981 50%, #8B5CF6 100%);
+            }
+            .auth-title-row {
+                display: flex;
+                align-items: center;
+                gap: 0.9rem;
+                margin-bottom: 0.8rem;
+            }
+            .auth-icon-badge {
+                width: 48px;
+                height: 48px;
+                background: var(--primary-soft);
+                color: var(--primary);
+                border-radius: 14px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 1.5rem;
+                border: 1px solid var(--primary-border);
+                box-shadow: 0 4px 10px rgba(79, 70, 229, 0.15);
+            }
+            .auth-title {
+                font-size: 1.6rem;
                 font-weight: 800;
+                color: var(--text);
                 letter-spacing: -0.03em;
-                margin-bottom: 0.5rem;
-                color: var(--text, #17231B);
+                line-height: 1.2;
             }
-            .auth-subtitle {
-                color: var(--muted, #526357);
-                margin-bottom: 1.25rem;
+            .auth-tagline {
+                font-size: 0.8rem;
+                color: var(--muted);
+                font-weight: 700;
+                text-transform: uppercase;
+                letter-spacing: 0.06em;
+            }
+            .auth-desc {
+                font-size: 0.93rem;
+                color: var(--muted);
+                line-height: 1.55;
+                margin-bottom: 1.2rem;
+            }
+            .auth-cred-box {
+                background: var(--primary-soft);
+                border: 1px solid var(--primary-border);
+                border-radius: 12px;
+                padding: 0.75rem 1rem;
+                margin-bottom: 1.2rem;
+                font-size: 0.85rem;
+                color: var(--text);
             }
         </style>
         """,
         unsafe_allow_html=True,
     )
 
-    st.markdown(
-        """
-        <div class="auth-shell">
-            <div class="auth-header">Company Access</div>
-            <div class="auth-subtitle">Secure sign-in for your workforce intelligence workspace.</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    _, col_center, _ = st.columns([1, 2.2, 1])
+    with col_center:
+        st.markdown(
+            """
+            <div class="auth-hero-card">
+                <div class="auth-title-row">
+                    <div class="auth-icon-badge">⚡</div>
+                    <div>
+                        <div class="auth-title">Workforce Intelligence</div>
+                        <div class="auth-tagline">Productivity & Allocation Optimizer</div>
+                    </div>
+                </div>
+                <div class="auth-desc">
+                    Executive decision portal for delivery benchmarking, capacity rebalancing, burnout alerts, and AI-powered attrition forecasting.
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-    login_tab, register_tab = st.tabs(["Login", "Register Company"])
+        tab_login, tab_register = st.tabs(["🔐 Sign In to Workspace", "🏢 Register New Organization"])
 
-    with login_tab:
-        with st.form("login_form", clear_on_submit=False):
-            email = st.text_input("Work email", placeholder="hr@company.com")
-            password = st.text_input("Password", type="password")
-            submitted = st.form_submit_button("Log in")
-            if submitted:
-                if not email or not password:
-                    st.error("Email and password are required.")
-                else:
-                    response = _api_request("post", "/auth/login", {"email": email, "password": password})
-                    if response is None:
-                        st.error("Authentication service is unavailable. Start the FastAPI backend first.")
-                    elif response.status_code == 200:
-                        data = response.json()
-                        st.session_state["auth_token"] = data["token"]
-                        st.session_state["auth_user"] = data["full_name"]
-                        st.session_state["user_email"] = data.get("email")
-                        st.session_state["company_id"] = data["company_id"]
-                        st.session_state["company_name"] = data.get("company_name", "Company")
-                        st.session_state["user_role"] = data.get("role", "HR")
-                        set_browser_cookie(COOKIE_NAME, data["token"])
-                        st.success("Login successful. Redirecting to the dashboard...")
+        with tab_login:
+            st.markdown(
+                """
+                <div class="auth-cred-box">
+                    <div style="font-weight:700; color:var(--primary); margin-bottom:2px;">🔑 Verified Login Credentials Ready</div>
+                    <div style="color:var(--text); font-size:0.82rem;">
+                        Work Email: <b>yaswanthanbrcs225@gmail.com</b><br>
+                        Password: <b>Rmkec@123.</b> (or <b>Rmkec@123</b>)
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            with st.form("portal_login_form"):
+                email_val = st.text_input(
+                    "Work Email",
+                    value="yaswanthanbrcs225@gmail.com",
+                    placeholder="name@company.com",
+                )
+                pass_val = st.text_input(
+                    "Password",
+                    value="Rmkec@123.",
+                    type="password",
+                    placeholder="Enter password",
+                )
+                submit_login = st.form_submit_button("🚀 Sign In to Workspace", use_container_width=True, type="primary")
+
+                if submit_login:
+                    success, message = login_user_action(email_val, pass_val)
+                    if success:
+                        st.success("✅ Authentication successful. Loading workspace...")
                         st.rerun()
                     else:
-                        st.error(response.json().get("detail", "Invalid email or password."))
+                        st.error(f"❌ {message}")
 
-    with register_tab:
-        with st.form("register_form", clear_on_submit=False):
-            company_name = st.text_input("Company name")
-            full_name = st.text_input("HR user full name")
-            email = st.text_input("Work email")
-            password = st.text_input("Password", type="password")
-            confirm_password = st.text_input("Confirm password", type="password")
-            if password:
-                st.markdown(password_policy_text(password), unsafe_allow_html=True)
-            submitted = st.form_submit_button("Create company account")
-            if submitted:
-                if not all([company_name, full_name, email, password, confirm_password]):
-                    st.error("All fields are required.")
-                else:
-                    response = _api_request(
-                        "post",
-                        "/auth/register",
-                        {
-                            "company_name": company_name,
-                            "full_name": full_name,
-                            "email": email,
-                            "password": password,
-                            "confirm_password": confirm_password,
-                        },
-                    )
-                    if response is None:
-                        st.error("Authentication service is unavailable. Start the FastAPI backend first.")
-                    elif response.status_code in (200, 201):
-                        st.success("Company registered successfully. You can now log in.")
+        with tab_register:
+            with st.form("portal_register_form"):
+                new_org = st.text_input("Organization Name", placeholder="e.g. Acme Corporation")
+                new_admin = st.text_input("Administrator Name", placeholder="e.g. Jane Doe")
+                new_email = st.text_input("Work Email", placeholder="e.g. admin@acme.com")
+                new_pwd = st.text_input("Password", type="password", placeholder="Min. 8 characters")
+                new_confirm = st.text_input("Confirm Password", type="password", placeholder="Re-enter password")
+
+                if new_pwd:
+                    st.markdown(password_policy_text(new_pwd), unsafe_allow_html=True)
+
+                submit_reg = st.form_submit_button("Create Enterprise Workspace", use_container_width=True, type="primary")
+                if submit_reg:
+                    if not all([new_org, new_admin, new_email, new_pwd, new_confirm]):
+                        st.error("All registration fields are required.")
                     else:
-                        st.error(response.json().get("detail", "Registration failed."))
+                        reg_res = _api_request(
+                            "post",
+                            "/auth/register",
+                            {
+                                "company_name": new_org,
+                                "full_name": new_admin,
+                                "email": new_email,
+                                "password": new_pwd,
+                                "confirm_password": new_confirm,
+                            },
+                        )
+                        if reg_res is not None and reg_res.status_code in (200, 201):
+                            st.success("✅ Organization created! Switch to the 'Sign In' tab to log in.")
+                        else:
+                            detail = reg_res.json().get("detail", "Registration failed.") if reg_res else "Auth service unavailable."
+                            st.error(f"❌ {detail}")
 
 
-def _account_widget_key(name: str, page_title: str | None = None) -> str:
-    suffix = (page_title or "app").strip().lower()
-    suffix = "".join(ch if ch.isalnum() else "_" for ch in suffix).strip("_") or "app"
-    return f"account_{suffix}_{name}"
-
-
-def render_account_menu() -> None:
-    with st.columns([8, 1])[1]:
-        with st.popover("⋮", use_container_width=True):
-            if st.button("👤 Profile", use_container_width=True):
-                st.session_state["account_view"] = "profile"
-            if st.button("⚙️ Settings", use_container_width=True):
-                st.session_state["account_view"] = "settings"
-            st.markdown("---")
-            if st.button("🚪 Logout", use_container_width=True):
-                token = st.session_state.get('auth_token')
-                if token:
-                    _api_request('post', '/auth/logout', token=token)
-                clear_auth_session()
-                st.session_state.pop("account_view", None)
-                st.success('You have been logged out.')
-                st.rerun()
-
-
-def render_account_view(page_title: str | None = None) -> None:
-    view = st.session_state.get("account_view")
-    if not view:
-        return
-
-    profile_key = _account_widget_key("profile_name", page_title)
-    current_password_key = _account_widget_key("current_password", page_title)
-    new_password_key = _account_widget_key("new_password", page_title)
-    confirm_password_key = _account_widget_key("confirm_password", page_title)
-
-    if view == "profile":
-        st.markdown("### Profile")
-        st.write(f"**Name:** {st.session_state.get('auth_user', 'User')}")
-        st.write(f"**Company:** {st.session_state.get('company_name', 'Company')}")
-        st.write(f"**Email:** {st.session_state.get('user_email', 'Unknown')}")
-        profile_name = st.text_input("Full name", value=st.session_state.get('auth_user', ''), key=profile_key)
-        if st.button("Save profile"):
-            token = st.session_state.get('auth_token')
-            response = _api_request('put', '/auth/profile', {'full_name': profile_name}, token=token)
-            if response and response.status_code == 200:
-                st.session_state['auth_user'] = response.json()['full_name']
-                st.success('Profile updated successfully.')
-            else:
-                st.error((response.json() if response else {}).get('detail', 'Unable to update profile.'))
-    elif view == "settings":
-        st.markdown("### Settings")
-        st.caption('Security & account settings')
-        current_password = st.text_input('Current password', type='password', key=current_password_key)
-        new_password = st.text_input('New password', type='password', key=new_password_key)
-        if new_password:
-            st.markdown(password_policy_text(new_password), unsafe_allow_html=True)
-        confirm_password = st.text_input('Confirm new password', type='password', key=confirm_password_key)
-        if st.button('Change password'):
-            if not all([current_password, new_password, confirm_password]):
-                st.error('Complete all password fields.')
-            else:
-                token = st.session_state.get('auth_token')
-                response = _api_request('put', '/auth/password', {
-                    'current_password': current_password,
-                    'new_password': new_password,
-                    'confirm_password': confirm_password,
-                }, token=token)
-                if response and response.status_code == 200:
-                    st.success('Password updated successfully.')
-                else:
-                    st.error((response.json() if response else {}).get('detail', 'Unable to change password.'))
-
-
-def configure_app(page_title: str = "AI Workforce Productivity & Allocation Optimizer") -> None:
-    st.set_page_config(
-        page_title=page_title,
-        page_icon="⚡",
-        layout="wide",
-        initial_sidebar_state="expanded",
-    )
+def configure_app(page_title: str = "Workforce Intelligence") -> None:
+    # Injects the consolidated enterprise CSS
+    st.markdown(get_custom_css(), unsafe_allow_html=True)
 
     auth_ok, _ = ensure_authenticated_session()
     if not auth_ok:
-        render_auth_screen()
-        st.stop()
-
-    st.markdown(get_custom_css(), unsafe_allow_html=True)
-    render_account_menu()
-    render_account_view(page_title=page_title)
-
-    st.markdown(
-        """
-        <style>
-            [data-testid="stHeader"] {
-                background: transparent !important;
-                box-shadow: none !important;
-            }
-            nav[data-testid="stPageNavigation"] {
-                display: flex !important;
-                flex-wrap: nowrap !important;
-                white-space: nowrap !important;
-                overflow-x: visible !important;
-                gap: 0.25rem !important;
-                align-items: center !important;
-                justify-content: flex-start !important;
-                background: rgba(255, 255, 255, 0.96) !important;
-                border: 1px solid rgba(21, 128, 61, 0.18) !important;
-                border-radius: 12px !important;
-                padding: 0.2rem 0.4rem !important;
-                margin: 0.1rem 0 0.8rem 0 !important;
-                box-shadow: 0 10px 24px -20px rgba(21, 128, 61, 0.35);
-            }
-            nav[data-testid="stPageNavigation"] a {
-                color: #17231B !important;
-                background: transparent !important;
-                border-radius: 8px !important;
-                padding: 0.42rem 0.6rem !important;
-                font-size: 0.73rem !important;
-                font-weight: 600 !important;
-                line-height: 1.2 !important;
-                border: 1px solid transparent !important;
-                min-width: max-content !important;
-                flex-shrink: 0 !important;
-                text-decoration: none !important;
-            }
-            nav[data-testid="stPageNavigation"] a:hover {
-                background: rgba(21, 128, 61, 0.08) !important;
-                border-color: rgba(21, 128, 61, 0.16) !important;
-            }
-            nav[data-testid="stPageNavigation"] a[aria-current="page"] {
-                background: linear-gradient(180deg, rgba(21, 128, 61, 0.12), rgba(21, 128, 61, 0.04)) !important;
-                border: 1px solid rgba(21, 128, 61, 0.26) !important;
-                color: #17231B !important;
-            }
-            html[data-theme="dark"] nav[data-testid="stPageNavigation"],
-            body[data-theme="dark"] nav[data-testid="stPageNavigation"] {
-                background: rgba(18, 33, 24, 0.96) !important;
-                border-color: rgba(74, 222, 128, 0.22) !important;
-                box-shadow: 0 10px 24px -20px rgba(0, 0, 0, 0.42) !important;
-            }
-            html[data-theme="dark"] nav[data-testid="stPageNavigation"] a,
-            body[data-theme="dark"] nav[data-testid="stPageNavigation"] a {
-                color: #F2F8F3 !important;
-            }
-            html[data-theme="dark"] nav[data-testid="stPageNavigation"] a:hover,
-            body[data-theme="dark"] nav[data-testid="stPageNavigation"] a:hover {
-                background: rgba(74, 222, 128, 0.08) !important;
-                border-color: rgba(74, 222, 128, 0.18) !important;
-            }
-            html[data-theme="dark"] nav[data-testid="stPageNavigation"] a[aria-current="page"],
-            body[data-theme="dark"] nav[data-testid="stPageNavigation"] a[aria-current="page"] {
-                background: linear-gradient(180deg, rgba(74, 222, 128, 0.14), rgba(74, 222, 128, 0.04)) !important;
-                border-color: rgba(74, 222, 128, 0.22) !important;
-                color: #F2F8F3 !important;
-            }
-            button[title="Deploy"],
-            [data-testid="stHeader"] button[title*="Deploy"],
-            [data-testid="stHeader"] [aria-label*="Deploy"] {
-                display: none !important;
-            }
-            :root {
-                --app-bg: #FFFFFF;
-                --app-bg-2: #F7FAF7;
-                --panel: #FFFFFF;
-                --panel-2: #F7FAF7;
-                --panel-3: #F7FAF7;
-                --border: #DCE7DE;
-                --border-soft: rgba(21, 128, 61, 0.12);
-                --text: #17231B;
-                --muted: #526357;
-                --accent: #15803D;
-                --accent-dark: #166534;
-                --accent-soft: #EAF5EC;
-                --sidebar-bg: #FFFFFF;
-                --sidebar-bg-2: #F7FAF7;
-                --topnav-bg: rgba(255,255,255,0.96);
-                --topnav-border: rgba(21, 128, 61, 0.18);
-            }
-            html[data-theme="dark"], body[data-theme="dark"] {
-                --app-bg: #0E1A13;
-                --app-bg-2: #122118;
-                --panel: #12311F;
-                --panel-2: #163C28;
-                --panel-3: #183D2B;
-                --border: #2B5541;
-                --border-soft: rgba(74, 222, 128, 0.18);
-                --text: #F2F8F3;
-                --muted: #CFE1D4;
-                --accent: #4ADE80;
-                --accent-dark: #22C55E;
-                --accent-soft: rgba(74, 222, 128, 0.12);
-                --sidebar-bg: #122118;
-                --sidebar-bg-2: #163C28;
-                --topnav-bg: rgba(18, 33, 24, 0.96);
-                --topnav-border: rgba(74, 222, 128, 0.20);
-            }
-            .premium-shell { padding-bottom: 2rem; }
-            .page-header {
-                background: linear-gradient(135deg, #FFFFFF 0%, #F7FAF7 100%);
-                border-radius: 18px;
-                padding: 1.5rem 1.5rem 1.1rem 1.5rem;
-                color: var(--text);
-                box-shadow: 0 18px 30px -18px rgba(21, 128, 61, 0.25);
-                margin-bottom: 1.25rem;
-                border: 1px solid var(--border);
-            }
-            html[data-theme="dark"] .page-header,
-            body[data-theme="dark"] .page-header {
-                background: linear-gradient(135deg, #122118 0%, #163C28 100%) !important;
-                border-color: var(--border) !important;
-                box-shadow: 0 18px 30px -18px rgba(0, 0, 0, 0.38) !important;
-            }
-            .page-title {
-                font-size: clamp(1.6rem, 2vw, 2.4rem);
-                font-weight: 800;
-                letter-spacing: -0.03em;
-                margin-bottom: 0.4rem;
-                color: var(--text);
-            }
-            .page-subtitle {
-                color: var(--muted);
-                font-size: 0.97rem;
-                line-height: 1.6;
-                max-width: 1100px;
-            }
-            .badge-row { margin-top: 0.9rem; }
-            .badge-pill {
-                display: inline-block;
-                background: var(--accent-soft);
-                color: var(--accent-dark, var(--accent));
-                border: 1px solid var(--border);
-                padding: 0.45rem 0.75rem;
-                border-radius: 999px;
-                font-size: 0.72rem;
-                font-weight: 700;
-                margin-right: 0.5rem;
-                margin-bottom: 0.4rem;
-            }
-            .section-shell {
-                background: var(--accent-soft);
-                border: 1px solid var(--border);
-                border-radius: 18px;
-                padding: 1rem 1rem 0.5rem;
-                margin-bottom: 1rem;
-            }
-            [data-testid="stSidebar"] {
-                background: linear-gradient(180deg, var(--sidebar-bg) 0%, var(--sidebar-bg-2) 100%) !important;
-                border-right: 1px solid var(--border) !important;
-                color: var(--text) !important;
-                transition: width 0.25s ease, min-width 0.25s ease, opacity 0.25s ease, padding 0.25s ease;
-            }
-            [data-testid="stSidebar"] .stTextInput > div,
-            [data-testid="stSidebar"] .stMultiSelect > div,
-            [data-testid="stSidebar"] .stSelectbox > div,
-            [data-testid="stSidebar"] .stNumberInput > div {
-                background: var(--panel);
-                border: 1px solid var(--border);
-                border-radius: 10px;
-            }
-            [data-testid="stSidebar"] input,
-            [data-testid="stSidebar"] span,
-            [data-testid="stSidebar"] label,
-            [data-testid="stSidebar"] p,
-            [data-testid="stSidebar"] .stMarkdown {
-                color: var(--text) !important;
-            }
-            [data-testid="stSidebar"] .stCaption {
-                color: var(--muted) !important;
-            }
-            .sidebar-toggle-wrap {
-                display: flex;
-                justify-content: flex-start;
-                margin: 0 0 0.85rem 0;
-            }
-            .sidebar-toggle-btn {
-                border: 1px solid rgba(21,128,61,0.20);
-                background: var(--accent-soft);
-                color: var(--text);
-                border-radius: 8px;
-                padding: 0.35rem 0.5rem;
-                font-size: 0.95rem;
-                cursor: pointer;
-                transition: all 0.2s ease;
-            }
-            .sidebar-toggle-btn:hover {
-                background: rgba(21, 128, 61, 0.08);
-            }
-            body[data-sidebar-collapsed="true"] [data-testid="stSidebar"] {
-                width: 0px !important;
-                min-width: 0px !important;
-                max-width: 0px !important;
-                padding: 0 !important;
-                overflow: hidden !important;
-                opacity: 0 !important;
-                border: none !important;
-            }
-            body[data-sidebar-collapsed="true"] [data-testid="stSidebar"] > div {
-                display: none !important;
-            }
-            body[data-sidebar-collapsed="true"] [data-testid="stAppViewContainer"] {
-                margin-left: 0 !important;
-            }
-            .kpi-card {
-                position: relative;
-                background: var(--panel, #FFFFFF) !important;
-                border: 1px solid var(--border, #DCE7DE);
-                border-radius: 18px;
-                padding: 1rem 1rem 0.9rem;
-                box-shadow: 0 18px 30px -24px rgba(21, 128, 61, 0.25);
-                height: 100%;
-                overflow: hidden;
-                color: var(--text, #17231B) !important;
-            }
-            .kpi-stripe { height: 6px; width: 100%; border-radius: 999px; margin-bottom: 0.9rem; }
-            .stripe-blue { background: linear-gradient(90deg, #15803D, #4ADE80); }
-            .stripe-purple { background: linear-gradient(90deg, #166534, #86EFAC); }
-            .stripe-emerald { background: linear-gradient(90deg, #166534, #4ADE80); }
-            .stripe-amber { background: linear-gradient(90deg, #22C55E, #BBF7D0); }
-            .stripe-red { background: linear-gradient(90deg, #15803D, #86EFAC); }
-            .kpi-title {
-                font-size: 0.8rem;
-                font-weight: 700;
-                text-transform: uppercase;
-                letter-spacing: 0.08em;
-                color: var(--muted, #526357);
-            }
-            .kpi-value {
-                font-size: clamp(1.5rem, 2.2vw, 2.1rem);
-                font-weight: 800;
-                color: var(--text, #17231B);
-                line-height: 1.15;
-                margin: 0.5rem 0;
-            }
-            .kpi-caption {
-                font-size: 0.76rem;
-                color: var(--muted, #526357);
-            }
-            .story-box {
-                background: var(--panel, #FFFFFF);
-                border-left: 4px solid var(--accent, #15803D);
-                border-radius: 14px;
-                padding: 0.8rem 1rem;
-                color: var(--text, #17231B);
-                margin-bottom: 1rem;
-                box-shadow: 0 2px 10px -8px rgba(21,128,61,0.08);
-            }
-            .story-box-amber { background: rgba(34, 197, 94, 0.06); border-left-color: #22C55E; }
-            .story-box-emerald { background: rgba(22, 163, 74, 0.06); border-left-color: #16A34A; }
-            .action-card {
-                background: var(--panel, #FFFFFF) !important;
-                border: 1px solid var(--border, #DCE7DE);
-                border-radius: 14px;
-                padding: 0.85rem 0.9rem;
-                box-shadow: 0 14px 28px -26px rgba(21, 128, 61, 0.24);
-                margin-bottom: 0.75rem;
-                color: var(--text, #17231B) !important;
-            }
-            .feature-grid > div { padding: 0.3rem; }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+        st.rerun()
 
 
 def render_page_header(title: str, subtitle: str, badges=None) -> None:
     badge_items = badges or []
     rendered_badges = "".join(f'<span class="badge-pill">{badge}</span>' for badge in badge_items)
+
+    company = st.session_state.get("company_name", "R.M.K. Engineering College")
+    user = st.session_state.get("auth_user", "Yaswanthan B R")
+    role = st.session_state.get("user_role", "HR Admin")
+
     st.markdown(
         f"""
         <div class="page-header">
-            <div class="page-title">{title}</div>
-            <div class="page-subtitle">{subtitle}</div>
+            <div class="page-header-top">
+                <div>
+                    <h1 class="page-title">{title}</h1>
+                    <div class="page-subtitle">{subtitle}</div>
+                </div>
+                <div class="tenant-pill">
+                    <span class="tenant-dot"></span>
+                    <span>🏢 <b>{company}</b></span>
+                    <span style="opacity:0.4;">|</span>
+                    <span>👤 {user} <span style="font-size:0.7rem; color:var(--primary); font-weight:700;">({role})</span></span>
+                </div>
+            </div>
             <div class="badge-row">{rendered_badges}</div>
         </div>
         """,
@@ -615,12 +389,31 @@ def render_page_header(title: str, subtitle: str, badges=None) -> None:
     )
 
 
-def render_kpi_card(title: str, value: str, caption: str, stripe: str = "stripe-blue") -> None:
+def render_kpi_card(
+    title: str,
+    value: str,
+    caption: str,
+    stripe: str = "stripe-blue",
+    chip: str = "",
+    chip_theme: str = "",
+    *args,
+    **kwargs,
+) -> None:
+    chip_val = chip or kwargs.get("chip", "")
+    theme_val = chip_theme or kwargs.get("chip_theme", "")
+    chip_html = ""
+    if chip_val:
+        theme_class = f"kpi-chip-{theme_val}" if theme_val else "kpi-chip-blue"
+        chip_html = f'<span class="kpi-chip {theme_class}">{chip_val}</span>'
+
     st.markdown(
         f"""
         <div class="kpi-card">
             <div class="kpi-stripe {stripe}"></div>
-            <div class="kpi-title">{title}</div>
+            <div class="kpi-header-row">
+                <div class="kpi-title">{title}</div>
+                {chip_html}
+            </div>
             <div class="kpi-value">{value}</div>
             <div class="kpi-caption">{caption}</div>
         </div>
@@ -630,61 +423,12 @@ def render_kpi_card(title: str, value: str, caption: str, stripe: str = "stripe-
 
 
 def render_empty_state(message: str = "No employee records match the active filter criteria.") -> None:
-    st.warning(message)
+    st.warning(f"⚠️ {message}")
     st.stop()
 
 
-def render_landing_page() -> None:
-    st.markdown(
-        """
-        <div class="page-header">
-            <div class="page-title">⚡ AI-Driven Workforce Allocation & Productivity Optimizer</div>
-            <div class="page-subtitle">
-                Executive decision intelligence platform for employee productivity analysis, workload balancing,
-                capability benchmarking, talent risk detection, and strategic workforce reallocation.
-            </div>
-            <div class="badge-row">
-                <span class="badge-pill">🤖 ML Predictive Engine</span>
-                <span class="badge-pill">⚖️ Workforce Balancer</span>
-                <span class="badge-pill">📊 Executive Dashboard</span>
-                <span class="badge-pill">🎯 SDG 8 & 9</span>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.markdown(
-        """
-        <div class="section-shell">
-            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem;">
-                <div class="action-card">
-                    <div style="font-size:0.72rem; font-weight:700; color:#15803D; text-transform:uppercase;">Overview</div>
-                    <div style="font-weight:800; font-size:1.1rem; color:var(--text); margin:0.3rem 0;">Executive health</div>
-                    <div style="color:var(--muted);">Monitor productivity, workload, attendance, and strategic signals across the workforce.</div>
-                </div>
-                <div class="action-card">
-                    <div style="font-size:0.72rem; font-weight:700; color:#166534; text-transform:uppercase;">Allocation</div>
-                    <div style="font-weight:800; font-size:1.1rem; color:var(--text); margin:0.3rem 0;">Rebalance capacity</div>
-                    <div style="color:var(--muted);">Flag overworked teams and surface underused talent ready for reallocation.</div>
-                </div>
-                <div class="action-card">
-                    <div style="font-size:0.72rem; font-weight:700; color:#15803D; text-transform:uppercase;">Risk</div>
-                    <div style="font-weight:800; font-size:1.1rem; color:var(--text); margin:0.3rem 0;">AI talent risk</div>
-                    <div style="color:var(--muted);">Assess attrition signals, burnout pressure, and productivity forecast scenarios.</div>
-                </div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.markdown("### Navigation")
-    st.info("Use the sidebar to move between the six premium pages: Executive Overview, Workforce Allocation, Department Analytics, Workload & Performance Analytics, Talent Risk & AI Predictions, and Employee Data Explorer.")
-
-
 def get_filtered_workforce():
-    df_raw = get_dataset()
+    df_raw = get_active_dataset()
 
     if "search_query" not in st.session_state:
         st.session_state.search_query = ""
@@ -698,38 +442,43 @@ def get_filtered_workforce():
         st.session_state.selected_burnout = []
 
     with st.sidebar:
+        company = st.session_state.get("company_name", "R.M.K. Engineering College")
+        user = st.session_state.get("auth_user", "Yaswanthan B R")
+        email = st.session_state.get("user_email", "yaswanthanbrcs225@gmail.com")
+        role = st.session_state.get("user_role", "HR Admin")
+
+        # 1. Organization & User Badge Card at TOP of Sidebar
         st.markdown(
-            """
-            <div class="sidebar-toggle-wrap">
-                <button class="sidebar-toggle-btn" id="sidebar-toggle-btn" aria-label="Toggle sidebar">⟨</button>
+            f"""
+            <div style="background:var(--app-bg-alt); border:1px solid var(--border); border-radius:14px; padding:0.9rem 1rem; margin-bottom:0.6rem; box-shadow:var(--card-shadow);">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.25rem;">
+                    <span style="font-size:0.68rem; font-weight:700; text-transform:uppercase; color:var(--muted); letter-spacing:0.06em;">ACTIVE WORKSPACE</span>
+                    <span style="font-size:0.68rem; background:var(--primary-soft); color:var(--primary); font-weight:700; padding:0.12rem 0.5rem; border-radius:999px;">{role}</span>
+                </div>
+                <div style="font-size:1.05rem; font-weight:800; color:var(--text); line-height:1.25; margin-bottom:0.25rem;">🏢 {company}</div>
+                <div style="font-size:0.83rem; font-weight:600; color:var(--text);">👤 {user}</div>
+                <div style="font-size:0.75rem; color:var(--muted);">{email}</div>
             </div>
-            <script>
-                const btn = document.getElementById('sidebar-toggle-btn');
-                const setCollapsed = (collapsed) => {
-                    document.body.setAttribute('data-sidebar-collapsed', collapsed ? 'true' : 'false');
-                    if (btn) {
-                        btn.textContent = collapsed ? '⟩' : '⟨';
-                        btn.setAttribute('aria-label', collapsed ? 'Expand sidebar' : 'Collapse sidebar');
-                    }
-                };
-                if (btn && !window.__sidebarToggleBound) {
-                    btn.addEventListener('click', function() {
-                        const collapsed = document.body.getAttribute('data-sidebar-collapsed') === 'true';
-                        setCollapsed(!collapsed);
-                    });
-                    window.__sidebarToggleBound = true;
-                }
-            </script>
             """,
             unsafe_allow_html=True,
         )
-        st.markdown("### ⚡ Workforce Navigator")
-        st.caption("AI-powered HR intelligence platform for productivity analysis and workload balancing.")
+
+        # 2. Prominent Quick Sign Out button right under the profile card!
+        if st.button("🚪 Sign Out", use_container_width=True, key="sidebar_quick_logout_btn"):
+            token = st.session_state.get("auth_token")
+            if token:
+                _api_request("post", "/auth/logout", token=token)
+            clear_auth_session()
+            st.success("Signed out successfully.")
+            st.rerun()
+
         st.markdown("---")
-        st.markdown("#### 🔍 Filter Workforce")
+
+        # 3. Direct, unmissable filter panel
+        st.markdown("#### 🔍 Filter Workforce Cohort")
 
         st.session_state.search_query = st.text_input(
-            "🔎 Search by ID, Role, Dept",
+            "🔎 Search ID, Role, Dept",
             value=st.session_state.search_query,
             placeholder="e.g. EMP-1015, Tech Lead...",
         )
@@ -739,6 +488,7 @@ def get_filtered_workforce():
             "🏢 Department",
             options=all_departments,
             default=st.session_state.selected_departments,
+            placeholder="All Departments",
         )
 
         if st.session_state.selected_departments:
@@ -752,6 +502,7 @@ def get_filtered_workforce():
             "💼 Job Role",
             options=available_roles,
             default=st.session_state.selected_roles,
+            placeholder="All Roles",
         )
 
         all_tiers = [
@@ -761,29 +512,84 @@ def get_filtered_workforce():
             "Lead / Principal (12+ yrs)",
         ]
         st.session_state.selected_exp_tiers = st.multiselect(
-            "📈 Experience Band",
+            "📈 Experience Tier",
             options=all_tiers,
             default=st.session_state.selected_exp_tiers,
+            placeholder="All Tiers",
         )
 
         st.session_state.selected_burnout = st.multiselect(
             "🔥 Burnout Risk",
             options=["Low", "Medium", "High"],
             default=st.session_state.selected_burnout,
+            placeholder="All Risk Levels",
         )
 
-        st.markdown("---")
-        st.markdown("#### 💡 How to use this workspace")
-        st.markdown(
-            """
-            1. Scan top KPIs to gauge workforce health.
-            2. Review allocation and risk signals across teams.
-            3. Drill into departments and individual employees.
-            4. Export clean or AI-enriched datasets for planning.
-            """
-        )
+        if any([
+            st.session_state.search_query,
+            st.session_state.selected_departments,
+            st.session_state.selected_roles,
+            st.session_state.selected_exp_tiers,
+            st.session_state.selected_burnout,
+        ]):
+            if st.button("✕ Reset All Filters", use_container_width=True):
+                st.session_state.search_query = ""
+                st.session_state.selected_departments = []
+                st.session_state.selected_roles = []
+                st.session_state.selected_exp_tiers = []
+                st.session_state.selected_burnout = []
+                st.rerun()
 
-        st.caption(f"📊 Active Filtered Cohort: **{len(df_raw):,}** total employees in DB.")
+        # 4. Upload Custom CSV Data
+        with st.expander("📁 Upload Custom Workforce Dataset", expanded=False):
+            st.caption("Upload session CSV dataset to analyze custom workforce records.")
+
+            uploaded_file = st.file_uploader(
+                "Choose a CSV file",
+                type=["csv"],
+                key="sidebar_csv_uploader",
+                label_visibility="collapsed",
+            )
+
+            val_col1, val_col2 = st.columns(2)
+            with val_col1:
+                validate_clicked = st.button("Validate", use_container_width=True, type="primary")
+            with val_col2:
+                if st.button("Reset", use_container_width=True, key="clear_sidebar_csv"):
+                    st.session_state.pop("sidebar_csv_uploader", None)
+                    st.session_state.pop("sidebar_csv_validation", None)
+                    st.session_state.pop("uploaded_employee_df", None)
+                    reset_active_dataset()
+                    st.rerun()
+
+            if validate_clicked and uploaded_file is not None:
+                validation_report = validate_uploaded_csv_backend(uploaded_file)
+                st.session_state["sidebar_csv_validation"] = validation_report
+
+                if validation_report and validation_report.get("success"):
+                    try:
+                        raw_df = pd.read_csv(io.BytesIO(uploaded_file.getvalue()))
+                        st.session_state["uploaded_employee_df"] = prepare_dataset_for_dashboard(raw_df)
+                        st.session_state["dataset_source"] = "uploaded"
+                    except Exception:
+                        st.session_state["uploaded_employee_df"] = None
+                        st.session_state["dataset_source"] = "default"
+                else:
+                    st.session_state["uploaded_employee_df"] = None
+                    st.session_state["dataset_source"] = "default"
+
+            validation_report = st.session_state.get("sidebar_csv_validation")
+            if validation_report:
+                status = validation_report.get("status", "invalid")
+                status_label = status.replace("_", " ").title()
+                if validation_report.get("success"):
+                    st.success(f"Status: {status_label}")
+                else:
+                    st.error(f"Status: {status_label}")
+
+                message = validation_report.get("message")
+                if message:
+                    st.caption(message)
 
     df = filter_data(
         df=df_raw,

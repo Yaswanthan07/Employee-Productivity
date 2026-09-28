@@ -8,9 +8,9 @@ from app.utils import create_gauge_indicator
 
 configure_app(page_title="Talent Risk & AI Predictions")
 render_page_header(
-    title="Talent Risk & AI Predictions",
-    subtitle="Track attrition exposure, burnout pressure, and predictive productivity outcomes with decision-ready signals for HR leadership and manager intervention.",
-    badges=["🤖 AI Forecasting", "🚨 Risk Monitoring", "🧠 Scenario Simulation"],
+    title="Talent Risk Intelligence & AI Predictions",
+    subtitle="Detect attrition risks, track employee burnout pressure, and simulate predictive workforce outcomes to guide preemptive HR interventions.",
+    badges=["🤖 Machine Learning Core", "🚨 Preemptive Risk Detection", "🔮 What-If Scenario Lab"],
 )
 
 df_raw, df = get_filtered_workforce()
@@ -20,19 +20,50 @@ if df.empty:
 kpis = compute_top_level_kpis(df)
 risk_summary = get_risk_summary(df)
 
-st.markdown('<div class="section-shell">', unsafe_allow_html=True)
+# Risk KPIs Grid (4 Balanced Columns)
+st.markdown("#### 🚨 Predictive Risk Matrix")
 col1, col2, col3, col4 = st.columns(4)
 with col1:
-    render_kpi_card("High Attrition Risk", f"{risk_summary['high_risk_count']}", f"{risk_summary['high_risk_pct']}% of cohort", "stripe-red")
+    render_kpi_card(
+        "High Attrition Risk",
+        f"{risk_summary['high_risk_count']}",
+        f"{risk_summary['high_risk_pct']}% of active cohort",
+        stripe="stripe-rose",
+        chip="🚨 Critical",
+        chip_theme="rose",
+    )
 with col2:
-    render_kpi_card("Moderate Risk", f"{risk_summary['medium_risk_pct']}%", "Risk pattern is emerging", "stripe-amber")
+    render_kpi_card(
+        "Moderate Attrition Risk",
+        f"{risk_summary['medium_risk_pct']}%",
+        "Emerging attrition signals",
+        stripe="stripe-amber",
+        chip="⚠️ Caution",
+        chip_theme="amber",
+    )
 with col3:
-    render_kpi_card("Low Risk / Stable", f"{risk_summary['low_risk_pct']}%", "Healthy workforce posture", "stripe-emerald")
+    render_kpi_card(
+        "Low Risk / Stable",
+        f"{risk_summary['low_risk_pct']}%",
+        "Healthy retention posture",
+        stripe="stripe-emerald",
+        chip="✅ Retained",
+        chip_theme="emerald",
+    )
 with col4:
-    render_kpi_card("Burnout High", f"{kpis['burnout_high_count']}", f"{kpis['burnout_high_pct']}% flagged", "stripe-purple")
-st.markdown('</div>', unsafe_allow_html=True)
+    render_kpi_card(
+        "Elevated Burnout",
+        f"{kpis['burnout_high_count']}",
+        f"{kpis['burnout_high_pct']}% experiencing chronic strain",
+        stripe="stripe-rose",
+        chip="🔥 Urgent",
+        chip_theme="rose",
+    )
 
-st.markdown("### Top High-Risk Employees")
+st.markdown("---")
+
+# High Risk Employee Watchlist
+st.markdown("### ⚠️ High-Risk Employee Watchlist")
 if not risk_summary['sample_high_risk_df'].empty:
     st.dataframe(
         risk_summary['sample_high_risk_df'].style.format({
@@ -45,22 +76,28 @@ if not risk_summary['sample_high_risk_df'].empty:
         hide_index=True,
     )
 else:
-    st.info("No high-risk employees are present in the current slice.")
+    st.info("No high-risk employee records are present in the current filter selection.")
 
-with st.expander("🔮 Open interactive what-if scenario simulator"):
-    st.caption("Adjust core employee attributes to simulate risk and productivity outcomes in real time.")
+st.markdown("---")
+
+# Interactive What-If Simulator
+st.markdown("### 🔮 Interactive What-If Scenario Simulator")
+st.caption("Adjust employee parameters in real time to simulate AI attrition probability and predicted productivity tier.")
+
+sim_card = st.container()
+with sim_card:
     sim_left, sim_right = st.columns([5, 5])
 
     with sim_left:
         dept_options = sorted(df_raw['Department'].unique().tolist())
         s_dept = st.selectbox("Department", dept_options, index=0)
-        s_hours = st.slider("Weekly Work Hours", 25.0, 70.0, 52.0, 0.5)
+        s_hours = st.slider("Weekly Work Hours", 25.0, 70.0, 50.0, 0.5)
         s_ot = max(0.0, s_hours - 40.0)
-        st.caption(f"Calculated overtime: **{s_ot:.1f} hrs/wk**")
-        s_rating = st.slider("Manager Rating (1-5)", 1.0, 5.0, 3.2, 0.1)
-        s_sat = st.slider("Satisfaction Score (1-10)", 1.0, 10.0, 4.5, 0.5)
-        s_burnout = st.selectbox("Burnout Level", ["Low", "Medium", "High"], index=2)
-        s_salary = st.number_input("Monthly Salary (INR)", min_value=25000, max_value=500000, value=95000, step=5000)
+        st.caption(f"Calculated weekly overtime: **{s_ot:.1f} hrs/wk**")
+        s_rating = st.slider("Manager Performance Rating", 1.0, 5.0, 3.2, 0.1)
+        s_sat = st.slider("Employee Satisfaction Score", 1.0, 10.0, 4.5, 0.5)
+        s_burnout = st.selectbox("Assessed Burnout Level", ["Low", "Medium", "High"], index=2)
+        s_salary = st.number_input("Monthly Compensation (INR)", min_value=25000, max_value=500000, value=95000, step=5000)
 
     with sim_right:
         payload = {
@@ -89,6 +126,25 @@ with st.expander("🔮 Open interactive what-if scenario simulator"):
         att_res = att_model.predict(payload)
         prod_res = prod_model.predict(payload)
 
-        st.plotly_chart(create_gauge_indicator("Predicted Attrition Risk", att_res['attrition_probability_pct'], 100.0, "%"), use_container_width=True)
-        st.markdown(f"**Predicted Productivity Tier:** `{prod_res['predicted_tier']}`")
-        st.markdown(f"**Strategic HR Guidance:** {prod_res['strategic_guidance']}")
+        risk_pct = att_res['attrition_probability_pct']
+        risk_color = "var(--rose)" if risk_pct > 60 else ("var(--amber)" if risk_pct > 35 else "var(--emerald)")
+
+        st.plotly_chart(
+            create_gauge_indicator("AI Predicted Attrition Risk", risk_pct, 100.0, "%"),
+            use_container_width=True
+        )
+
+        st.markdown(
+            f"""
+            <div class="action-card" style="border-left: 4px solid {risk_color}; margin-top: 0.5rem;">
+                <div style="font-size:0.75rem; font-weight:700; text-transform:uppercase; color:var(--muted); margin-bottom:4px;">Productivity Classification</div>
+                <div style="font-weight:800; font-size:1.1rem; color:var(--text); margin-bottom:6px;">
+                    Predicted Tier: <span style="color:var(--primary);">{prod_res['predicted_tier']}</span>
+                </div>
+                <div style="font-size:0.86rem; color:var(--muted); line-height:1.5;">
+                    <b>Executive Guidance:</b> {prod_res['strategic_guidance']}
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
