@@ -173,15 +173,56 @@ def get_custom_css() -> str:
         }
 
         .block-container {
-            padding-top: 1.5rem !important;
+            padding-top: 4.8rem !important;
             padding-bottom: 3rem !important;
             max-width: 1440px !important;
         }
 
-        /* Streamlit Native Header */
+        /* Streamlit Native Header & Top Navbar */
         [data-testid="stHeader"] {
-            background: transparent !important;
-            backdrop-filter: blur(8px) !important;
+            background: var(--panel) !important;
+            border-bottom: 1px solid var(--border) !important;
+            box-shadow: 0 2px 10px -2px rgba(15, 23, 42, 0.06) !important;
+            backdrop-filter: blur(12px) !important;
+            z-index: 999990 !important;
+        }
+
+        /* Top Bar Navigation Items Styling */
+        [data-testid="stHeader"] nav {
+            gap: 0.25rem !important;
+            align-items: center !important;
+        }
+
+        [data-testid="stHeader"] nav a,
+        [data-testid="stHeader"] nav button,
+        [data-testid="stHeader"] [data-testid="stPageLink-NavLink"],
+        [data-testid="stHeader"] ul li a {
+            font-weight: 600 !important;
+            font-size: 0.86rem !important;
+            border-radius: 8px !important;
+            padding: 0.38rem 0.75rem !important;
+            transition: all 0.15s ease-in-out !important;
+            color: var(--text-secondary) !important;
+            text-decoration: none !important;
+            border: 1px solid transparent !important;
+        }
+
+        [data-testid="stHeader"] nav a:hover,
+        [data-testid="stHeader"] nav button:hover,
+        [data-testid="stHeader"] [data-testid="stPageLink-NavLink"]:hover,
+        [data-testid="stHeader"] ul li a:hover {
+            background: var(--app-bg-alt) !important;
+            color: var(--primary) !important;
+            border-color: var(--border) !important;
+        }
+
+        [data-testid="stHeader"] nav a[aria-current="page"],
+        [data-testid="stHeader"] [data-testid="stPageLink-NavLink"][aria-current="page"],
+        [data-testid="stHeader"] ul li a[aria-current="page"] {
+            background: var(--primary-soft) !important;
+            color: var(--primary) !important;
+            border-color: var(--primary-border) !important;
+            font-weight: 700 !important;
         }
 
         button[title="Deploy"],
